@@ -53,6 +53,41 @@ class Database:
                 logger.info(f"Database connection attempt {attempt + 1}/{cls._max_retries}")
                 logger.info(f"Connecting to: {params['host']}:{params['port']}, db: {params['database']}, user: {params['user']}")
                 
+                # Try with ssl mode - Supabase might need different SSL settings
+                ssl_modes = ["prefer", "require", True]
+                
+                for ssl_mode in ssl_modes:
+                    try:
+                        logger.info(f"Trying SSL mode: {ssl_mode}")
+                        pool = await asyncpg.create_pool(
+                            host=params["host"],
+                            port=params["port"],
+                            user=params["user"],
+                            password=params["password"],
+                            database=params["database"],
+                            min_size=2,
+                            max_size=10,
+                            command_timeout=60,
+                            max_queries=50000,
+                            max_inactive_connection_lifetime=300,
+                            ssl=ssl_mode,
+                        )
+                        
+                        async with pool.acquire() as conn:
+                            await conn.fetchval("SELECT 1")
+                        
+                        logger.info(f"Database connection successful with SSL mode: {ssl_mode}")
+                        return pool
+                    except Exception as ssl_error:
+                        logger.warning(f"SSL mode {ssl_mode} failed: {str(ssl_error)}")
+                        if pool:
+                            try:
+                                await pool.close()
+                            except:
+                                pass
+                
+                # If all SSL modes fail, try without SSL
+                logger.info("Trying connection without SSL...")
                 pool = await asyncpg.create_pool(
                     host=params["host"],
                     port=params["port"],
@@ -62,15 +97,13 @@ class Database:
                     min_size=2,
                     max_size=10,
                     command_timeout=60,
-                    max_queries=50000,
-                    max_inactive_connection_lifetime=300,
-                    ssl="require",
+                    ssl=False,
                 )
                 
                 async with pool.acquire() as conn:
                     await conn.fetchval("SELECT 1")
                 
-                logger.info("Database connection successful")
+                logger.info("Database connection successful (no SSL)")
                 return pool
                 
             except Exception as e:

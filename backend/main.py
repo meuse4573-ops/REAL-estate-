@@ -52,16 +52,20 @@ app.include_router(documents.router, prefix="/api/v1")
 @app.get("/health")
 async def health_check():
     """
-    Health check endpoint - simple status response.
+    Health check endpoint - simple status response with error details.
     """
     try:
         db_status = await check_db_connection()
         if db_status["status"] == "healthy":
             return {"status": "ok", "db": "connected"}
         else:
-            return {"status": "ok", "db": "disconnected"}
-    except Exception:
-        return {"status": "ok", "db": "disconnected"}
+            return {
+                "status": "ok", 
+                "db": "disconnected",
+                "error": db_status.get("error", "Unknown error")
+            }
+    except Exception as e:
+        return {"status": "ok", "db": "disconnected", "error": str(e)}
 
 
 @app.get("/")
