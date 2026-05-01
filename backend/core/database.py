@@ -8,6 +8,7 @@ from typing import Optional
 from .config import settings
 import os
 import logging
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -20,75 +21,39 @@ class Database:
     _retry_delay = 2
     
     @classmethod
-    def _parse_db_url(cls) -> dict:
-        """Parse DATABASE_URL to extract connection parameters."""
-        raw_url = settings.DATABASE_URL
+    def _get_connection_params(cls) -> dict:
+        """Parse DATABASE_URL using urlparse for proper handling of special chars."""
+        database_url = os.environ.get("DATABASE_URL", settings.DATABASE_URL)
         
-        # Log what we're reading
         logger.info("=" * 50)
-        logger.info(f"READING DATABASE_URL from settings...")
-        logger.info(f"settings.DATABASE_URL = {raw_url[:80]}...")
-        logger.info(f"os.environ.get('DATABASE_URL') = {os.environ.get('DATABASE_URL', 'NOT SET')[:80] if os.environ.get('DATABASE_URL') else 'NOT SET'}...")
-        logger.info("=" * 50)
+        logger.info(f"DATABASE_URL: {database_url[:60]}...")
         
-        url = raw_url.replace("postgresql+asyncpg://", "").replace("postgresql://", "")
+        parsed = urlparse(database_url)
         
-        if "@" in url:
-            user_pass, host_db = url.split("@")
-            if ":" in user_pass:
-                parts = user_pass.split(":")
-                user = parts[0]
-                password = ":".join(parts[1:])  # Handle password with colons
-            else:
-                user = user_pass
-                password = ""
-            
-            if "/" in host_db:
-                host_port, db = host_db.split("/", 1)
-            else:
-                host_port = host_db
-                db = "postgres"
-            
-            if ":" in host_port:
-                host_parts = host_port.rsplit(":", 1)
-                host = host_parts[0]
-                port = int(host_parts[1]) if host_parts[1].isdigit() else 5432
-            else:
-                host = host_port
-                port = 5432
-        else:
-            user, password, host, port, db = "postgres", "postgres", "localhost", 5432, "postgres"
+        params = {
+            "host": parsed.hostname,
+            "port": parsed.port or 5432,
+            "user": parsed.username,
+            "password": parsed.password,
+            "database": parsed.path.lstrip("/") if parsed.path else "postgres",
+        }
         
-        logger.info(f"FINAL PARSED VALUES:")
-        logger.info(f"  Host: {host}")
-        logger.info(f"  Port: {port}")
-        logger.info(f"  DB: {db}")
-        logger.info(f"  User: {user}")
-        logger.info(f"  Password: {'*' * len(password) if password else 'EMPTY'}")
+        logger.info(f"PARSED - Host: {params['host']}, Port: {params['port']}, DB: {params['database']}, User: {params['user']}")
         logger.info("=" * 50)
         
-        return {"host": host, "port": port, "user": user, "password": password, "database": db}
+        return params
     
     @classmethod
     async def _create_pool_with_retry(cls) -> asyncpg.Pool:
         """Create pool with retry logic for connection failures."""
-        params = cls._parse_db_url()
+        params = cls._get_connection_params()
         
-        last_error = None
+        ssl_modes = ["require", "prefer", True, False]
         
-        # Try multiple approaches
-        approaches = [
-            {"ssl": "prefer", "description": "SSL prefer"},
-            {"ssl": "require", "description": "SSL require"},
-            {"ssl": True, "description": "SSL True"},
-            {"ssl": False, "description": "No SSL"},
-        ]
-        
-        for approach in approaches:
-            ssl_val = approach["ssl"]
+        for ssl_val in ssl_modes:
             for attempt in range(cls._max_retries):
                 try:
-                    logger.info(f"Attempting connection (attempt {attempt+1}/3, SSL={ssl_val})...")
+                    logger.info(f"Connecting (SSL={ssl_val}, attempt {attempt+1}/3)...")
                     
                     pool = await asyncpg.create_pool(
                         host=params["host"],
@@ -102,23 +67,21 @@ class Database:
                         ssl=ssl_val,
                     )
                     
-                    # Test the connection
                     async with pool.acquire() as conn:
-                        result = await conn.fetchval("SELECT 1")
+                        await conn.fetchval("SELECT 1")
                     
-                    logger.info(f"SUCCESS! Connected with SSL={ssl_val}")
+                    logger.info(f"SUCCESS with SSL={ssl_val}")
                     return pool
                     
                 except Exception as e:
                     error_str = str(e)
                     last_error = e
-                    logger.warning(f"Failed (SSL={ssl_val}, attempt {attempt+1}): {error_str[:100]}")
+                    logger.warning(f"Failed (SSL={ssl_val}, attempt {attempt+1}): {error_str[:80]}")
                     
                     if attempt < cls._max_retries - 1:
                         await asyncio.sleep(1)
         
-        logger.error(f"All connection attempts failed. Last error: {str(last_error)[:200]}")
-        raise ConnectionError(f"Database connection failed: {str(last_error)}")
+        raise ConnectionError(f"Database connection failed: {str(last_error)[:200]}")
     
     @classmethod
     async def get_pool(cls) -> asyncpg.Pool:
@@ -174,16 +137,10 @@ async def check_db_connection() -> dict:
         pool = await Database.get_pool()
         async with pool.acquire() as conn:
             result = await conn.fetchval("SELECT 1")
-        return {
-            "status": "healthy",
-            "database": "connected",
-        }
+        return {"status": "healthy", "database": "connected"}
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Database health check failed: {error_msg}")
         return {
             "status": "unhealthy",
             "database": "disconnected",
-            "error": error_msg[:200],
-            "error_type": type(e).__name__
+            "error": str(e)[:200],
         }
