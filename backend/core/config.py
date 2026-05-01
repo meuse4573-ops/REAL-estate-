@@ -2,13 +2,24 @@
 Core configuration settings for DealMind AI.
 All settings are loaded from environment variables.
 """
+import os
+import logging
 from pydantic_settings import BaseSettings
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/dealmind"
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        logger.info("=== LOADING SETTINGS ===")
+        logger.info(f"DATABASE_URL env var: {os.environ.get('DATABASE_URL', 'NOT SET')[:60]}...")
+        logger.info(f"Resolved DATABASE_URL: {self.DATABASE_URL[:50]}...")
+        logger.info("========================")
     
     # Auth
     SECRET_KEY: str = "your-super-secret-key-change-in-production"

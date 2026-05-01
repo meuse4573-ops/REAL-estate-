@@ -22,7 +22,11 @@ class Database:
     @classmethod
     def _parse_db_url(cls) -> dict:
         """Parse DATABASE_URL to extract connection parameters."""
-        url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "").replace("postgresql://", "")
+        raw_url = settings.DATABASE_URL
+        logger.info(f"=== DATABASE CONFIGURATION ===")
+        logger.info(f"FULL DATABASE_URL: {raw_url[:50]}...{'(password hidden)' if '@' in raw_url else ''}")
+        
+        url = raw_url.replace("postgresql+asyncpg://", "").replace("postgresql://", "")
         
         if "@" in url:
             user_pass, host_db = url.split("@")
@@ -32,6 +36,9 @@ class Database:
             host = host.split(":")[0] if ":" in host else host
         else:
             user, password, host, port, db = "postgres", "postgres", "localhost", 5432, "postgres"
+        
+        logger.info(f"PARSED - Host: {host}, Port: {port}, DB: {db}, User: {user}")
+        logger.info(f"================================")
         
         return {"host": host, "port": port, "user": user, "password": password, "database": db}
     
