@@ -16,3 +16,4 @@ vaderSentiment
 python-dotenv
 openai
 openpyxl
+pydantic[email]
