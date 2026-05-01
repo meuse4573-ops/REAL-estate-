@@ -52,16 +52,26 @@ app.include_router(documents.router, prefix="/api/v1")
 @app.get("/health")
 async def health_check():
     """
-    Health check endpoint - returns database connection status.
+    Health check endpoint - returns database connection status with detailed error info.
     """
     db_status = await check_db_connection()
     
-    return {
+    response = {
         "status": "healthy" if db_status["status"] == "healthy" else "degraded",
         "service": "DealMind AI API",
         "version": "1.0.0",
-        "database": db_status
+        "database": {
+            "status": db_status.get("status", "unknown"),
+            "pool_size": db_status.get("pool_size", "N/A")
+        }
     }
+    
+    if db_status["status"] == "unhealthy":
+        response["database"]["error"] = db_status.get("error", "Unknown error")
+        response["database"]["error_type"] = db_status.get("error_type", "Unknown")
+        response["database"]["hint"] = "Check DATABASE_URL format and network connectivity"
+    
+    return response
 
 
 @app.get("/")
