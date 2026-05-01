@@ -4,26 +4,21 @@ DealMind AI - Main FastAPI Application Entry Point.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import os
 
 from core.config import settings
-from core.database import Database, check_db_connection
-from routers import auth, documents
+from core.database import check_db_connection, get_supabase
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown events."""
-    # Startup: Ensure upload directory exists
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    
-    # Don't initialize database on startup - connect lazily
-    # Database connection will be established on first request
+    # Initialize Supabase client on startup
+    try:
+        get_supabase()
+    except Exception as e:
+        print(f"Warning: Could not initialize Supabase: {e}")
     
     yield
-    
-    # Shutdown: Close database pool
-    await Database.close_pool()
 
 
 app = FastAPI(
@@ -38,32 +33,19 @@ app = FastAPI(
 # CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.FRONTEND_URL, "http://localhost:3000", "http://localhost:8000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(auth.router, prefix="/auth")
-app.include_router(documents.router, prefix="/api/v1")
-
 
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint - simple status response with error details.
-    """
+    """Health check endpoint - returns database connection status."""
     try:
-        db_status = await check_db_connection()
-        if db_status["status"] == "healthy":
-            return {"status": "ok", "db": "connected"}
-        else:
-            return {
-                "status": "ok", 
-                "db": "disconnected",
-                "error": db_status.get("error", "Unknown error")
-            }
+        result = get_supabase().table("agents").select("id").limit(1).execute()
+        return {"status": "ok", "db": "connected"}
     except Exception as e:
         return {"status": "ok", "db": "disconnected", "error": str(e)}
 

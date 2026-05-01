@@ -3,61 +3,43 @@ Core configuration settings for DealMind AI.
 All settings are loaded from environment variables.
 """
 import os
-import logging
-from pydantic_settings import BaseSettings
 from typing import Optional
 
-logger = logging.getLogger(__name__)
 
-
-class Settings(BaseSettings):
-    # Database
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/dealmind"
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        logger.info("=== LOADING SETTINGS ===")
-        logger.info(f"DATABASE_URL env var: {os.environ.get('DATABASE_URL', 'NOT SET')[:60]}...")
-        logger.info(f"Resolved DATABASE_URL: {self.DATABASE_URL[:50]}...")
-        logger.info("========================")
+class Settings:
+    # Supabase
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_KEY: str = ""
     
     # Auth
-    SECRET_KEY: str = "your-super-secret-key-change-in-production"
+    SECRET_KEY: str = "your-random-secret-key"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     
-    # GLM 5.1 Model Configuration
-    GLM_API_KEY: str = ""
-    GLM_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4"
-    GLM_MODEL: str = "glm-5"
+    # Anthropic
+    ANTHROPIC_API_KEY: str = ""
     
     # Gmail OAuth
     GMAIL_CLIENT_ID: str = ""
     GMAIL_CLIENT_SECRET: str = ""
-    GMAIL_REDIRECT_URI: str = "http://localhost:8000/emails/callback/gmail"
-    
-    # Outlook OAuth
-    OUTLOOK_CLIENT_ID: str = ""
-    OUTLOOK_CLIENT_SECRET: str = ""
-    OUTLOOK_REDIRECT_URI: str = "http://localhost:8000/emails/callback/outlook"
-    
-    # CRM
-    FOLLOWUPBOSS_API_KEY: Optional[str] = None
-    
-    # Notifications
-    SLACK_WEBHOOK_URL: Optional[str] = None
+    GMAIL_REDIRECT_URI: str = ""
     
     # App
-    APP_ENV: str = "development"
-    FRONTEND_URL: str = "http://localhost:3000"
+    APP_ENV: str = "production"
+    FRONTEND_URL: str = ""
     
-    # Upload
-    UPLOAD_DIR: str = "uploads"
-    MAX_UPLOAD_SIZE: int = 50_000_000  # 50MB
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    def __init__(self):
+        self.SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+        self.SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+        self.SECRET_KEY = os.getenv("SECRET_KEY", self.SECRET_KEY)
+        self.ALGORITHM = os.getenv("ALGORITHM", self.ALGORITHM)
+        self.ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+        self.ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+        self.GMAIL_CLIENT_ID = os.getenv("GMAIL_CLIENT_ID", "")
+        self.GMAIL_CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET", "")
+        self.GMAIL_REDIRECT_URI = os.getenv("GMAIL_REDIRECT_URI", "")
+        self.APP_ENV = os.getenv("APP_ENV", "production")
+        self.FRONTEND_URL = os.getenv("FRONTEND_URL", "")
 
 
 settings = Settings()

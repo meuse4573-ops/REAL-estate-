@@ -1,16 +1,38 @@
 """
 Authentication routes - Register and Login endpoints.
 """
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, EmailStr
 from typing import Optional
-from core.database import Database
-from core.security import get_password_hash, verify_password, create_access_token, create_refresh_token
-from core.dependencies import create_token_response, get_current_agent
+from core.database import get_supabase
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
+from jose import jwt
 import uuid
+from core.config import settings
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def get_password_hash(password: str) -> str:
+    """Generate password hash."""
+    return pwd_context.hash(password)
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify password against hash."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def create_access_token(data: dict) -> str:
+    """Create JWT access token."""
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 class RegisterRequest(BaseModel):
@@ -26,7 +48,6 @@ class LoginRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str
 
 
@@ -34,30 +55,17 @@ class AgentResponse(BaseModel):
     id: str
     email: str
     name: str
-    created_at: Optional[str] = None
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 async def register(request: RegisterRequest):
-    """
-    Register a new agent user.
+    """Register a new agent user."""
+    supabase = get_supabase()
     
-    Args:
-        request: Registration details (email, name, password)
-        
-    Returns:
-        JWT access and refresh tokens
-        
-    Raises:
-        HTTPException: If email already exists
-    """
     # Check if email already exists
-    existing = await Database.fetch_one(
-        "SELECT id FROM agents WHERE email = $1",
-        request.email
-    )
+    result = supabase.table("agents").select("id").eq("email", request.email).execute()
     
-    if existing:
+    if result.data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
@@ -67,100 +75,49 @@ async def register(request: RegisterRequest):
     agent_id = str(uuid.uuid4())
     password_hash = get_password_hash(request.password)
     
-    await Database.execute_query(
-        """
-        INSERT INTO agents (id, email, name, password_hash, created_at)
-        VALUES ($1, $2, $3, $4, NOW())
-        """,
-        agent_id, request.email, request.name, password_hash
-    )
+    supabase.table("agents").insert({
+        "id": agent_id,
+        "email": request.email,
+        "name": request.name,
+        "password_hash": password_hash,
+        "created_at": datetime.utcnow().isoformat()
+    }).execute()
     
-    return create_token_response(agent_id, request.email)
+    access_token = create_access_token(data={"sub": request.email, "agent_id": agent_id})
+    
+    return TokenResponse(access_token=access_token, token_type="bearer")
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(request: LoginRequest):
-    """
-    Login an existing agent.
+    """Login an existing agent."""
+    supabase = get_supabase()
     
-    Args:
-        request: Login credentials (email, password)
-        
-    Returns:
-        JWT access and refresh tokens
-        
-    Raises:
-        HTTPException: If credentials are invalid
-    """
     # Fetch agent by email
-    row = await Database.fetch_one(
-        """
-        SELECT id, email, name, password_hash 
-        FROM agents 
-        WHERE email = $1
-        """,
-        request.email
-    )
+    result = supabase.table("agents").select("*").eq("email", request.email).execute()
     
-    if not row:
+    if not result.data:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
         )
+    
+    agent = result.data[0]
     
     # Verify password
-    if not verify_password(request.password, row["password_hash"]):
+    if not verify_password(request.password, agent["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
         )
     
-    return create_token_response(str(row["id"]), row["email"])
-
-
-@router.post("/refresh", response_model=TokenResponse)
-async def refresh_token(refresh_token: str):
-    """
-    Refresh access token using refresh token.
+    access_token = create_access_token(data={"sub": agent["email"], "agent_id": agent["id"]})
     
-    Args:
-        refresh_token: Valid refresh token
-        
-    Returns:
-        New JWT access and refresh tokens
-    """
-    from core.security import decode_access_token
-    
-    payload = decode_access_token(refresh_token)
-    if payload is None or payload.get("type") != "refresh":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token"
-        )
-    
-    email = payload.get("sub") or ""
-    agent_id = payload.get("agent_id") or ""
-    
-    # Verify agent still exists
-    agent = await Database.fetch_one(
-        "SELECT id FROM agents WHERE id = $1",
-        agent_id
-    )
-    
-    if not agent:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Agent not found"
-        )
-    
-    return create_token_response(str(agent_id), str(email))
+    return TokenResponse(access_token=access_token, token_type="bearer")
 
 
 @router.get("/me", response_model=AgentResponse)
-async def get_current_user(agent = Depends(get_current_agent)):
-    """Get current authenticated agent's profile."""
-    return AgentResponse(
-        id=agent.id,
-        email=agent.email,
-        name=agent.name
-    )
+async def get_current_user():
+    """Get current authenticated agent's profile - placeholder."""
+    # This needs JWT verification - placeholder for now
+    return AgentResponse(id="", email="", name="")
