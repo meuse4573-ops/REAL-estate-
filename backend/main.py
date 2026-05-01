@@ -8,7 +8,7 @@ import os
 
 from core.config import settings
 from core.database import Database, check_db_connection
-from routers import auth
+from routers import auth, documents
 
 
 @asynccontextmanager
@@ -45,7 +45,8 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(auth.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/auth")
+app.include_router(documents.router, prefix="/api/v1")
 
 
 @app.get("/health")
