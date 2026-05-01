@@ -23,22 +23,49 @@ class Database:
     def _parse_db_url(cls) -> dict:
         """Parse DATABASE_URL to extract connection parameters."""
         raw_url = settings.DATABASE_URL
-        logger.info(f"=== DATABASE CONFIGURATION ===")
-        logger.info(f"FULL DATABASE_URL: {raw_url[:50]}...{'(password hidden)' if '@' in raw_url else ''}")
+        
+        # Log what we're reading
+        logger.info("=" * 50)
+        logger.info(f"READING DATABASE_URL from settings...")
+        logger.info(f"settings.DATABASE_URL = {raw_url[:80]}...")
+        logger.info(f"os.environ.get('DATABASE_URL') = {os.environ.get('DATABASE_URL', 'NOT SET')[:80] if os.environ.get('DATABASE_URL') else 'NOT SET'}...")
+        logger.info("=" * 50)
         
         url = raw_url.replace("postgresql+asyncpg://", "").replace("postgresql://", "")
         
         if "@" in url:
             user_pass, host_db = url.split("@")
-            user, password = user_pass.split(":") if ":" in user_pass else ("postgres", "")
-            host, db = host_db.split("/") if "/" in host_db else (host_db, "postgres")
-            port = int(host.split(":")[-1]) if ":" in host else 5432
-            host = host.split(":")[0] if ":" in host else host
+            if ":" in user_pass:
+                parts = user_pass.split(":")
+                user = parts[0]
+                password = ":".join(parts[1:])  # Handle password with colons
+            else:
+                user = user_pass
+                password = ""
+            
+            if "/" in host_db:
+                host_port, db = host_db.split("/", 1)
+            else:
+                host_port = host_db
+                db = "postgres"
+            
+            if ":" in host_port:
+                host_parts = host_port.rsplit(":", 1)
+                host = host_parts[0]
+                port = int(host_parts[1]) if host_parts[1].isdigit() else 5432
+            else:
+                host = host_port
+                port = 5432
         else:
             user, password, host, port, db = "postgres", "postgres", "localhost", 5432, "postgres"
         
-        logger.info(f"PARSED - Host: {host}, Port: {port}, DB: {db}, User: {user}")
-        logger.info(f"================================")
+        logger.info(f"FINAL PARSED VALUES:")
+        logger.info(f"  Host: {host}")
+        logger.info(f"  Port: {port}")
+        logger.info(f"  DB: {db}")
+        logger.info(f"  User: {user}")
+        logger.info(f"  Password: {'*' * len(password) if password else 'EMPTY'}")
+        logger.info("=" * 50)
         
         return {"host": host, "port": port, "user": user, "password": password, "database": db}
     
@@ -48,80 +75,54 @@ class Database:
         params = cls._parse_db_url()
         
         last_error = None
-        for attempt in range(cls._max_retries):
-            try:
-                logger.info(f"Database connection attempt {attempt + 1}/{cls._max_retries}")
-                logger.info(f"Connecting to: {params['host']}:{params['port']}, db: {params['database']}, user: {params['user']}")
-                
-                # Try with ssl mode - Supabase might need different SSL settings
-                ssl_modes = ["prefer", "require", True]
-                
-                for ssl_mode in ssl_modes:
-                    try:
-                        logger.info(f"Trying SSL mode: {ssl_mode}")
-                        pool = await asyncpg.create_pool(
-                            host=params["host"],
-                            port=params["port"],
-                            user=params["user"],
-                            password=params["password"],
-                            database=params["database"],
-                            min_size=2,
-                            max_size=10,
-                            command_timeout=60,
-                            max_queries=50000,
-                            max_inactive_connection_lifetime=300,
-                            ssl=ssl_mode,
-                        )
-                        
-                        async with pool.acquire() as conn:
-                            await conn.fetchval("SELECT 1")
-                        
-                        logger.info(f"Database connection successful with SSL mode: {ssl_mode}")
-                        return pool
-                    except Exception as ssl_error:
-                        logger.warning(f"SSL mode {ssl_mode} failed: {str(ssl_error)}")
-                        if pool:
-                            try:
-                                await pool.close()
-                            except:
-                                pass
-                
-                # If all SSL modes fail, try without SSL
-                logger.info("Trying connection without SSL...")
-                pool = await asyncpg.create_pool(
-                    host=params["host"],
-                    port=params["port"],
-                    user=params["user"],
-                    password=params["password"],
-                    database=params["database"],
-                    min_size=2,
-                    max_size=10,
-                    command_timeout=60,
-                    ssl=False,
-                )
-                
-                async with pool.acquire() as conn:
-                    await conn.fetchval("SELECT 1")
-                
-                logger.info("Database connection successful (no SSL)")
-                return pool
-                
-            except Exception as e:
-                last_error = e
-                logger.error(f"Database connection attempt {attempt + 1} failed: {str(e)}")
-                if attempt < cls._max_retries - 1:
-                    logger.info(f"Retrying in {cls._retry_delay} seconds...")
-                    await asyncio.sleep(cls._retry_delay)
         
-        raise ConnectionError(f"Failed to connect to database after {cls._max_retries} attempts: {str(last_error)}")
+        # Try multiple approaches
+        approaches = [
+            {"ssl": "prefer", "description": "SSL prefer"},
+            {"ssl": "require", "description": "SSL require"},
+            {"ssl": True, "description": "SSL True"},
+            {"ssl": False, "description": "No SSL"},
+        ]
+        
+        for approach in approaches:
+            ssl_val = approach["ssl"]
+            for attempt in range(cls._max_retries):
+                try:
+                    logger.info(f"Attempting connection (attempt {attempt+1}/3, SSL={ssl_val})...")
+                    
+                    pool = await asyncpg.create_pool(
+                        host=params["host"],
+                        port=params["port"],
+                        user=params["user"],
+                        password=params["password"],
+                        database=params["database"],
+                        min_size=1,
+                        max_size=5,
+                        command_timeout=30,
+                        ssl=ssl_val,
+                    )
+                    
+                    # Test the connection
+                    async with pool.acquire() as conn:
+                        result = await conn.fetchval("SELECT 1")
+                    
+                    logger.info(f"SUCCESS! Connected with SSL={ssl_val}")
+                    return pool
+                    
+                except Exception as e:
+                    error_str = str(e)
+                    last_error = e
+                    logger.warning(f"Failed (SSL={ssl_val}, attempt {attempt+1}): {error_str[:100]}")
+                    
+                    if attempt < cls._max_retries - 1:
+                        await asyncio.sleep(1)
+        
+        logger.error(f"All connection attempts failed. Last error: {str(last_error)[:200]}")
+        raise ConnectionError(f"Database connection failed: {str(last_error)}")
     
     @classmethod
     async def get_pool(cls) -> asyncpg.Pool:
-        """
-        Get or create the database connection pool.
-        Uses singleton pattern to ensure one pool per application.
-        Includes retry logic for connection failures.
-        """
+        """Get or create the database connection pool."""
         if cls._pool is None:
             cls._pool = await cls._create_pool_with_retry()
         return cls._pool
@@ -135,7 +136,7 @@ class Database:
     
     @classmethod
     async def execute_query(cls, query: str, *args):
-        """Execute a query without returning rows (INSERT, UPDATE, DELETE)."""
+        """Execute a query without returning rows."""
         pool = await cls.get_pool()
         async with pool.acquire() as conn:
             return await conn.execute(query, *args)
@@ -176,7 +177,6 @@ async def check_db_connection() -> dict:
         return {
             "status": "healthy",
             "database": "connected",
-            "pool_size": pool.get_size() if hasattr(pool, 'get_size') else "N/A"
         }
     except Exception as e:
         error_msg = str(e)
@@ -184,6 +184,6 @@ async def check_db_connection() -> dict:
         return {
             "status": "unhealthy",
             "database": "disconnected",
-            "error": error_msg,
+            "error": error_msg[:200],
             "error_type": type(e).__name__
         }
