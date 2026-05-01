@@ -1,142 +1,159 @@
 """
-Database connection pool and utilities using asyncpg.
-Provides connection management for PostgreSQL with SSL support.
+Database connection pool and utilities using psycopg2.
+Provides connection management for PostgreSQL.
 """
-import asyncpg
-import asyncio
-from typing import Optional
-from .config import settings
+import psycopg2
+from psycopg2 import pool
 import os
 import logging
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 
 class Database:
-    """Async PostgreSQL database connection manager."""
+    """PostgreSQL database connection manager using psycopg2."""
     
-    _pool: Optional[asyncpg.Pool] = None
-    _max_retries = 3
-    _retry_delay = 2
+    _pool = None
     
     @classmethod
     def _get_connection_params(cls) -> dict:
-        """Parse DATABASE_URL using urlparse for proper handling of special chars."""
-        database_url = os.environ.get("DATABASE_URL", settings.DATABASE_URL)
+        """Parse DATABASE_URL for connection."""
+        DATABASE_URL = os.getenv("DATABASE_URL", os.environ.get("DATABASE_URL", ""))
+        
+        # Convert postgresql+asyncpg:// to postgresql://
+        if "postgresql+asyncpg://" in DATABASE_URL:
+            DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
         
         logger.info("=" * 50)
-        logger.info(f"DATABASE_URL: {database_url[:60]}...")
+        logger.info(f"DATABASE_URL: {DATABASE_URL[:60]}...")
         
-        parsed = urlparse(database_url)
+        # Parse using psycopg2's connection string parser
+        conn_params = psycopg2.extensions.parse_dsn(DATABASE_URL)
         
-        params = {
-            "host": parsed.hostname,
-            "port": parsed.port or 5432,
-            "user": parsed.username,
-            "password": parsed.password,
-            "database": parsed.path.lstrip("/") if parsed.path else "postgres",
-        }
-        
-        logger.info(f"PARSED - Host: {params['host']}, Port: {params['port']}, DB: {params['database']}, User: {params['user']}")
+        logger.info(f"PARSED - Host: {conn_params.get('host')}, Port: {conn_params.get('port')}, DB: {conn_params.get('dbname')}, User: {conn_params.get('user')}")
         logger.info("=" * 50)
         
-        return params
+        return conn_params
     
     @classmethod
-    async def _create_pool_with_retry(cls) -> asyncpg.Pool:
-        """Create pool with retry logic for connection failures."""
+    def _create_pool(cls) -> pool.ThreadedConnectionPool:
+        """Create connection pool."""
         params = cls._get_connection_params()
         
-        ssl_modes = ["require", "prefer", True, False]
+        logger.info("Creating psycopg2 connection pool...")
         
-        for ssl_val in ssl_modes:
-            for attempt in range(cls._max_retries):
-                try:
-                    logger.info(f"Connecting (SSL={ssl_val}, attempt {attempt+1}/3)...")
-                    
-                    pool = await asyncpg.create_pool(
-                        host=params["host"],
-                        port=params["port"],
-                        user=params["user"],
-                        password=params["password"],
-                        database=params["database"],
-                        min_size=1,
-                        max_size=5,
-                        command_timeout=30,
-                        ssl=ssl_val,
-                    )
-                    
-                    async with pool.acquire() as conn:
-                        await conn.fetchval("SELECT 1")
-                    
-                    logger.info(f"SUCCESS with SSL={ssl_val}")
-                    return pool
-                    
-                except Exception as e:
-                    error_str = str(e)
-                    last_error = e
-                    logger.warning(f"Failed (SSL={ssl_val}, attempt {attempt+1}): {error_str[:80]}")
-                    
-                    if attempt < cls._max_retries - 1:
-                        await asyncio.sleep(1)
+        pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1,
+            maxconn=10,
+            **params
+        )
         
-        raise ConnectionError(f"Database connection failed: {str(last_error)[:200]}")
+        # Test connection
+        conn = pool.getconn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.close()
+        pool.putconn(conn)
+        
+        logger.info("Database connection successful!")
+        return pool
     
     @classmethod
-    async def get_pool(cls) -> asyncpg.Pool:
+    def get_pool(cls):
         """Get or create the database connection pool."""
         if cls._pool is None:
-            cls._pool = await cls._create_pool_with_retry()
+            cls._pool = cls._create_pool()
         return cls._pool
     
     @classmethod
-    async def close_pool(cls):
+    def close_pool(cls):
         """Close the database connection pool."""
         if cls._pool is not None:
-            await cls._pool.close()
+            cls._pool.closeall()
             cls._pool = None
     
     @classmethod
-    async def execute_query(cls, query: str, *args):
+    def execute_query(cls, query: str, *args):
         """Execute a query without returning rows."""
-        pool = await cls.get_pool()
-        async with pool.acquire() as conn:
-            return await conn.execute(query, *args)
+        pool = cls.get_pool()
+        conn = pool.getconn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, args)
+            result = cursor.rowcount
+            cursor.close()
+            conn.commit()
+            return result
+        finally:
+            pool.putconn(conn)
     
     @classmethod
-    async def fetch_rows(cls, query: str, *args):
+    def fetch_rows(cls, query: str, *args):
         """Execute a query and return all rows."""
-        pool = await cls.get_pool()
-        async with pool.acquire() as conn:
-            return await conn.fetch(query, *args)
+        pool = cls.get_pool()
+        conn = pool.getconn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, args)
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            rows = cursor.fetchall()
+            cursor.close()
+            
+            # Convert to list of dicts
+            result = []
+            for row in rows:
+                result.append(dict(zip(columns, row)))
+            return result
+        finally:
+            pool.putconn(conn)
     
     @classmethod
-    async def fetch_one(cls, query: str, *args):
+    def fetch_one(cls, query: str, *args):
         """Execute a query and return one row."""
-        pool = await cls.get_pool()
-        async with pool.acquire() as conn:
-            return await conn.fetchrow(query, *args)
+        pool = cls.get_pool()
+        conn = pool.getconn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, args)
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            row = cursor.fetchone()
+            cursor.close()
+            
+            if row:
+                return dict(zip(columns, row))
+            return None
+        finally:
+            pool.putconn(conn)
     
     @classmethod
-    async def fetch_val(cls, query: str, *args):
+    def fetch_val(cls, query: str, *args):
         """Execute a query and return a single value."""
-        pool = await cls.get_pool()
-        async with pool.acquire() as conn:
-            return await conn.fetchval(query, *args)
+        pool = cls.get_pool()
+        conn = pool.getconn()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(query, args)
+            result = cursor.fetchone()
+            cursor.close()
+            return result[0] if result else None
+        finally:
+            pool.putconn(conn)
 
 
-async def get_db_pool() -> asyncpg.Pool:
+def get_db_pool():
     """FastAPI dependency to get database pool."""
-    return await Database.get_pool()
+    return Database.get_pool()
 
 
 async def check_db_connection() -> dict:
-    """Check database connection health with detailed error reporting."""
+    """Check database connection health."""
     try:
-        pool = await Database.get_pool()
-        async with pool.acquire() as conn:
-            result = await conn.fetchval("SELECT 1")
+        pool = Database.get_pool()
+        conn = pool.getconn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.close()
+        pool.putconn(conn)
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
         return {
