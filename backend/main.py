@@ -3,13 +3,11 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from core.database import get_supabase
+from core.database import get_supabase, check_db_connection
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan - startup and shutdown."""
-    # Initialize Supabase client on startup
     try:
         get_supabase()
         print("Supabase client initialized successfully")
@@ -27,7 +25,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,24 +33,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
 from routers import auth
 app.include_router(auth.router)
 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint - returns database connection status."""
-    try:
-        get_supabase().table("agents").select("id").limit(1).execute()
-        return JSONResponse(content={"status": "ok", "db": "connected"})
-    except Exception as e:
-        return JSONResponse(content={"status": "ok", "db": "disconnected", "error": str(e)})
+    db_ok = await check_db_connection()
+    return JSONResponse(content={
+        "status": "healthy" if db_ok else "degraded",
+        "app": "running",
+        "database": "connected" if db_ok else "disconnected",
+        "version": "1.0.0"
+    })
 
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
     return {
         "message": "Welcome to DealMind AI API",
         "docs": "/docs",
